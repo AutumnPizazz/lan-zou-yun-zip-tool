@@ -4,11 +4,10 @@ import queue
 import shutil
 import struct
 import tempfile
-import threading
 import zipfile
 import hashlib
-from typing import Any, Optional, cast, Callable
 from pathlib import Path
+from typing import Any, Optional
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -17,7 +16,7 @@ from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import PBKDF2
 
-from lan_zou_yun import get_app_version
+from lan_zou_yun.app_state import get_runtime_base_dir
 from lan_zou_yun.gui_common import (
     ProgressPanelMixin,
     emit_log,
@@ -165,127 +164,144 @@ def rebuild_encrypted(base_dir, manifest, out_path, q=None, progress_callback=No
             emit_log(q, f"已合并：{part['name']}")
 
 
-def worker(state, q):
+def run_restore(state, q):
+    manifest_path = Path(state["manifest"])
+    if not manifest_path.exists():
+        raise FileNotFoundError("清单文件不存在")
+    base_dir = manifest_path.parent
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    phases = [
+        ("校验分片", 0.35),
+        ("合并分片", 0.30),
+        ("解密文件", 0.30),
+        ("等待保存", 0.05),
+    ]
+    phase_offsets = {}
+    current_offset = 0.0
+    for phase_name, weight in phases:
+        phase_offsets[phase_name] = (current_offset, weight)
+        current_offset += weight
+
+    emit_log(q, "开始校验分片")
+    verify_total = sum(part["size"] for part in manifest.get("parts", []))
+    verify_start, verify_span = phase_offsets["校验分片"]
+    emit_progress(q, "校验分片", 0, verify_total, "正在检查所有分片", verify_start)
+    verify_parts(
+        base_dir,
+        manifest,
+        q=q,
+        progress_callback=lambda current, total, detail: emit_progress(
+            q,
+            "校验分片",
+            current,
+            total,
+            detail,
+            overall_percent(current, total, verify_start, verify_span),
+        ),
+    )
+    emit_progress(q, "校验分片", verify_total, verify_total, "分片校验完成", verify_start + verify_span)
+
+    temp_dir = tempfile.mkdtemp()
+    enc_path = Path(temp_dir) / "encrypted.dat"
+    zip_path = Path(temp_dir) / "output.zip"
     try:
-        manifest_path = Path(state["manifest"])
-        if not manifest_path.exists():
-            raise FileNotFoundError("清单文件不存在")
-        base_dir = manifest_path.parent
-
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            manifest = json.load(f)
-
-        phases = [
-            ("校验分片", 0.35),
-            ("合并分片", 0.30),
-            ("解密文件", 0.30),
-            ("等待保存", 0.05),
-        ]
-        phase_offsets = {}
-        current_offset = 0.0
-        for phase_name, weight in phases:
-            phase_offsets[phase_name] = (current_offset, weight)
-            current_offset += weight
-
-        emit_log(q, "开始校验分片")
-        verify_total = sum(part["size"] for part in manifest.get("parts", []))
-        verify_start, verify_span = phase_offsets["校验分片"]
-        emit_progress(q, "校验分片", 0, verify_total, "正在检查所有分片", verify_start)
-        verify_parts(
+        emit_log(q, "开始合并分片")
+        merge_total = sum(part["size"] for part in manifest.get("parts", []))
+        merge_start, merge_span = phase_offsets["合并分片"]
+        emit_progress(q, "合并分片", 0, merge_total, "正在写入合并文件", merge_start)
+        rebuild_encrypted(
             base_dir,
             manifest,
+            enc_path,
             q=q,
             progress_callback=lambda current, total, detail: emit_progress(
                 q,
-                "校验分片",
+                "合并分片",
                 current,
                 total,
                 detail,
-                overall_percent(current, total, verify_start, verify_span),
+                overall_percent(current, total, merge_start, merge_span),
             ),
         )
-        emit_progress(q, "校验分片", verify_total, verify_total, "分片校验完成", verify_start + verify_span)
+        emit_progress(q, "合并分片", merge_total, merge_total, "分片合并完成", merge_start + merge_span)
 
-        temp_dir = tempfile.mkdtemp()
-        try:
-            enc_path = Path(temp_dir) / "encrypted.dat"
-            emit_log(q, "开始合并分片")
-            merge_total = sum(part["size"] for part in manifest.get("parts", []))
-            merge_start, merge_span = phase_offsets["合并分片"]
-            emit_progress(q, "合并分片", 0, merge_total, "正在写入合并文件", merge_start)
-            rebuild_encrypted(
-                base_dir,
-                manifest,
-                enc_path,
-                q=q,
-                progress_callback=lambda current, total, detail: emit_progress(
-                    q,
-                    "合并分片",
-                    current,
-                    total,
-                    detail,
-                    overall_percent(current, total, merge_start, merge_span),
-                ),
-            )
-            emit_progress(q, "合并分片", merge_total, merge_total, "分片合并完成", merge_start + merge_span)
-
-            emit_log(q, "开始解密")
-            zip_path = Path(temp_dir) / "output.zip"
-            decrypt_total = enc_path.stat().st_size
-            decrypt_start, decrypt_span = phase_offsets["解密文件"]
-            emit_progress(q, "解密文件", 0, decrypt_total, "正在恢复原始内容", decrypt_start)
-            decrypt_file(
-                enc_path,
-                zip_path,
-                state["password"],
-                q=q,
-                progress_callback=lambda current, total: emit_progress(
-                    q,
-                    "解密文件",
-                    current,
-                    total,
-                    f"{format_size(current)} / {format_size(total)}",
-                    overall_percent(current, total, decrypt_start, decrypt_span),
-                ),
-            )
-            wait_start, wait_span = phase_offsets["等待保存"]
-            emit_progress(q, "等待保存", 1, 1, "请选择文件保存位置", wait_start + wait_span)
-
-            q.put(("select_save", str(zip_path), manifest))
-        finally:
-            pass
-    except Exception as e:
-        q.put(("error", str(e)))
+        emit_log(q, "开始解密")
+        decrypt_total = enc_path.stat().st_size
+        decrypt_start, decrypt_span = phase_offsets["解密文件"]
+        emit_progress(q, "解密文件", 0, decrypt_total, "正在恢复原始内容", decrypt_start)
+        decrypt_file(
+            enc_path,
+            zip_path,
+            state["password"],
+            q=q,
+            progress_callback=lambda current, total: emit_progress(
+                q,
+                "解密文件",
+                current,
+                total,
+                f"{format_size(current)} / {format_size(total)}",
+                overall_percent(current, total, decrypt_start, decrypt_span),
+            ),
+        )
+        wait_start, wait_span = phase_offsets["等待保存"]
+        emit_progress(q, "等待保存", 1, 1, "请选择文件保存位置", wait_start + wait_span)
+        q.put(("select_save", str(zip_path), manifest))
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
 
-class App(tk.Tk, ProgressPanelMixin):
-    def __init__(self):
-        super().__init__()
-        self.title(f"蓝奏云分片助手 v{get_app_version()} - 还原工具")
-        self.geometry("680x500")
-        self.resizable(False, False)
-
+class RestorePage(ttk.Frame, ProgressPanelMixin):
+    def __init__(self, parent, controller, config):
+        super().__init__(parent, padding=10)
+        self.controller = controller
+        self.config_store = config
         self.manifest_path = tk.StringVar()
         self._init_progress_state("请选择清单后开始")
-        self.queue: queue.Queue[tuple[Any, ...]] = queue.Queue()
+        self.queue: Any = None
         self._build_ui()
+        self.load_config()
         self._schedule_poll()
 
     def _build_ui(self):
-        frm = ttk.Frame(self, padding=10)
-        frm.pack(fill="both", expand=True)
+        header = ttk.Frame(self)
+        header.grid(row=0, column=0, columnspan=3, sticky="we", pady=(0, 10))
+        header.columnconfigure(1, weight=1)
+        self.back_button = ttk.Button(header, text="返回首页", command=self.on_back)
+        self.back_button.grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="还原", font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=1)
 
-        ttk.Label(frm, text="清单文件：").grid(row=0, column=0, sticky="w")
-        self.manifest_entry = ttk.Entry(frm, textvariable=self.manifest_path, width=50)
-        self.manifest_entry.grid(row=0, column=1, sticky="w")
-        self.manifest_button = ttk.Button(frm, text="选择", command=self.choose_manifest)
-        self.manifest_button.grid(row=0, column=2, padx=5)
+        ttk.Label(self, text="清单文件：").grid(row=1, column=0, sticky="w")
+        self.manifest_entry = ttk.Entry(self, textvariable=self.manifest_path, width=50)
+        self.manifest_entry.grid(row=1, column=1, sticky="w")
+        self.manifest_button = ttk.Button(self, text="选择", command=self.choose_manifest)
+        self.manifest_button.grid(row=1, column=2, padx=5)
 
-        self._build_progress_panel(frm, start_row=1, button_text="开始还原", button_command=self.start)
-        self.inputs = [self.manifest_entry, self.manifest_button, self.start_button]
+        self._build_progress_panel(self, start_row=2, button_text="开始还原", button_command=self.start)
+        self.inputs = [self.manifest_entry, self.manifest_button, self.start_button, self.back_button]
+
+    def load_config(self):
+        self.manifest_path.set(self.config_store.get("restore", "last_manifest_path", default=""))
+
+    def sync_config(self):
+        self.config_store.set("restore", "last_manifest_path", value=self.manifest_path.get())
+
+    def on_back(self):
+        if self.is_running:
+            return
+        self.sync_config()
+        self.controller.show_home()
 
     def choose_manifest(self):
-        path = filedialog.askopenfilename()
+        initial_dir = ""
+        if self.manifest_path.get():
+            initial_dir = str(Path(self.manifest_path.get()).parent)
+        if not initial_dir:
+            initial_dir = self.config_store.get("restore", "last_save_dir", default="")
+        path = filedialog.askopenfilename(initialdir=initial_dir or None)
         if path:
             self.manifest_path.set(path)
 
@@ -294,10 +310,12 @@ class App(tk.Tk, ProgressPanelMixin):
             return
         manifest = self.manifest_path.get()
         if not manifest:
-            auto = Path.cwd() / "manifest.txt"
-            if auto.exists():
-                manifest = str(auto)
-                self.manifest_path.set(manifest)
+            candidates = [get_runtime_base_dir() / "manifest.txt", Path.cwd() / "manifest.txt"]
+            for auto in candidates:
+                if auto.exists():
+                    manifest = str(auto)
+                    self.manifest_path.set(manifest)
+                    break
             else:
                 messagebox.showwarning("提示", "请先选择清单文件")
                 return
@@ -309,11 +327,12 @@ class App(tk.Tk, ProgressPanelMixin):
         if password is None:
             return
 
+        self.sync_config()
         self._reset_progress("正在初始化任务")
         self._set_running(True)
+        self.controller.refresh_navigation_state()
         state = {"manifest": manifest, "password": password}
-        t = threading.Thread(target=worker, args=(state, self.queue), daemon=True)
-        t.start()
+        self.queue = self.controller.start_background_task(run_restore, state)
 
     def ask_password(self, password_required: bool) -> Optional[str]:
         if not password_required:
@@ -323,6 +342,8 @@ class App(tk.Tk, ProgressPanelMixin):
         dlg.title("输入密码")
         dlg.geometry("300x140")
         dlg.resizable(False, False)
+        dlg.transient(self.winfo_toplevel())
+        dlg.grab_set()
 
         pwd = tk.StringVar()
         ttk.Label(dlg, text="解密密码：").pack(pady=10)
@@ -341,41 +362,45 @@ class App(tk.Tk, ProgressPanelMixin):
         self.wait_window(dlg)
         return result
 
-    def _schedule_poll(self) -> None:
-        after_func = cast(Callable[..., object], self.after)
-        after_func(200, self._poll_queue)
+    def _schedule_poll(self):
+        self.after(200, self._poll_queue)
 
-    def _poll_queue(self) -> None:
-        try:
-            while True:
-                item = self.queue.get_nowait()
-                if item[0] == "log":
-                    self._append_log(item[1])
-                elif item[0] == "progress":
-                    self._handle_progress(item[1])
-                elif item[0] == "error":
-                    self._set_running(False)
-                    messagebox.showerror("错误", item[1])
-                elif item[0] == "select_save":
-                    self._set_running(False)
-                    self.on_select_save(item[1], item[2])
-        except queue.Empty:
-            pass
+    def _poll_queue(self):
+        if self.queue is not None:
+            try:
+                while True:
+                    item = self.queue.get_nowait()
+                    if item[0] == "log":
+                        self._append_log(item[1])
+                    elif item[0] == "progress":
+                        self._handle_progress(item[1])
+                    elif item[0] == "error":
+                        self._set_running(False)
+                        self.controller.refresh_navigation_state()
+                        messagebox.showerror("错误", item[1])
+                    elif item[0] == "select_save":
+                        self._set_running(False)
+                        self.controller.refresh_navigation_state()
+                        self.on_select_save(item[1], item[2])
+            except queue.Empty:
+                pass
         self._schedule_poll()
 
     def on_select_save(self, temp_zip, manifest):
         temp_dir = Path(temp_zip).parent
         source_info = manifest.get("source", {})
         zip_used = bool(source_info.get("zip_used"))
-        default_name = (
-            source_info.get("zip_name")
-            if zip_used
-            else source_info.get("name") or "output.txt"
-        )
+        default_name = source_info.get("zip_name") if zip_used else source_info.get("name") or "output.txt"
         default_ext = ".zip" if zip_used else Path(default_name).suffix or ".txt"
+        initial_dir = ""
+        if self.manifest_path.get():
+            initial_dir = str(Path(self.manifest_path.get()).parent)
+        if not initial_dir:
+            initial_dir = self.config_store.get("restore", "last_save_dir", default="")
         save_path = filedialog.asksaveasfilename(
             defaultextension=default_ext,
             initialfile=default_name,
+            initialdir=initial_dir or None,
         )
         if not save_path:
             messagebox.showwarning("提示", "已取消保存")
@@ -384,21 +409,17 @@ class App(tk.Tk, ProgressPanelMixin):
 
         self._mark_complete("还原完成", "文件已保存")
         shutil.move(temp_zip, save_path)
+        save_dir = str(Path(save_path).parent)
+        self.config_store.set("restore", "last_save_dir", value=save_dir)
+        self.sync_config()
         self._append_log(f"已保存：{save_path}")
 
         if zip_used and messagebox.askyesno("提示", "是否自动解压？"):
-            out_dir = filedialog.askdirectory()
+            initial_extract_dir = self.config_store.get("restore", "last_extract_dir", default="") or save_dir
+            out_dir = filedialog.askdirectory(initialdir=initial_extract_dir or None)
             if out_dir:
                 with zipfile.ZipFile(save_path, "r") as zf:
                     zf.extractall(out_dir)
+                self.config_store.set("restore", "last_extract_dir", value=out_dir)
                 self._append_log(f"已解压到：{out_dir}")
         shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def main():
-    app = App()
-    app.mainloop()
-
-
-if __name__ == "__main__":
-    main()

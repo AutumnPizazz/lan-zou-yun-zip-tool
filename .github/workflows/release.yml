@@ -36,31 +36,23 @@ jobs:
             throw "标签版本 v$tagVersion 与 pyproject.toml 中的版本 $projectVersion 不一致"
           }
 
-      - name: 构建 split_gui
-        run: poetry run pyinstaller split_gui.spec --clean
-
-      - name: 构建 restore_gui
-        run: poetry run pyinstaller restore_gui.spec --clean
+      - name: 构建统一 GUI
+        run: poetry run pyinstaller lan_zou_zip_tool_gui.spec --clean
 
       - name: 重命名发布文件
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}"
-          Copy-Item "dist/split_gui.exe" "dist/split_gui-$version.exe"
-          Copy-Item "dist/restore_gui.exe" "dist/restore_gui-$version.exe"
+          Copy-Item "dist/lan_zou_zip_tool_gui.exe" "dist/lan_zou_zip_tool_gui-$version.exe"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: gui-executables
-          path: |
-            dist/split_gui-${{ github.ref_name }}.exe
-            dist/restore_gui-${{ github.ref_name }}.exe
+          name: gui-executable
+          path: dist/lan_zou_zip_tool_gui-${{ github.ref_name }}.exe
 
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            dist/split_gui-${{ github.ref_name }}.exe
-            dist/restore_gui-${{ github.ref_name }}.exe
+          files: dist/lan_zou_zip_tool_gui-${{ github.ref_name }}.exe

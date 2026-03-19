@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['src\\lan_zou_yun\\restore_gui.py'],
+    ['src\\lan_zou_yun\\main_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('pyproject.toml', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='restore_gui',
+    name='lan_zou_zip_tool_gui',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

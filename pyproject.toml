@@ -18,8 +18,7 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-split-gui = "lan_zou_yun.split_gui:main"
-restore-gui = "lan_zou_yun.restore_gui:main"
+lan-zou-zip-tool-gui = "lan_zou_yun.main_gui:main"
 
 [[tool.poetry.source]]
 name = "tsinghua"
