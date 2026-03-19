@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "lan-zou-yun"
+version = "0.1.0"
+description = "蓝奏云分片助手"
+authors = ["AutumnPizazz <114050365+AutumnPizazz@users.noreply.github.com>"]
+readme = "README.md"
+packages = [{ include = "lan_zou_yun", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.14"
+pycryptodome = "^3.20.0"
+
+[tool.poetry.group.dev.dependencies]
+pyinstaller = { version = "^6.19.0", python = ">=3.13,<3.15" }
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+split-gui = "lan_zou_yun.split_gui:main"
+restore-gui = "lan_zou_yun.restore_gui:main"
+
+[[tool.poetry.source]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
+priority = "primary"
