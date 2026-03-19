@@ -1,12 +1,22 @@
 import queue
 import threading
+import urllib.error
+import urllib.request
+import webbrowser
+import json
 from typing import Any
 
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from lan_zou_yun import get_app_version
-from lan_zou_yun.app_state import APP_CONFIG_NAME, AppConfig, get_runtime_base_dir
+from lan_zou_yun.app_state import (
+    APP_CONFIG_NAME,
+    AppConfig,
+    LATEST_RELEASE_API,
+    RELEASES_PAGE_URL,
+    get_runtime_base_dir,
+)
 from lan_zou_yun.restore_gui import RestorePage
 from lan_zou_yun.split_gui import SplitPage
 
@@ -40,8 +50,13 @@ class HomePage(ttk.Frame):
         self.restore_button = ttk.Button(cards, text="开始还原", command=lambda: self.controller.show_page("restore"))
         self.restore_button.grid(row=0, column=1, padx=12, ipadx=24, ipady=18)
 
+        actions = ttk.Frame(self)
+        actions.grid(row=4, column=0, pady=(0, 12))
+        self.check_update_button = ttk.Button(actions, text="检查更新", command=self.controller.check_for_updates)
+        self.check_update_button.grid(row=0, column=0, padx=6)
+
         self.hint_var = tk.StringVar()
-        ttk.Label(self, textvariable=self.hint_var, foreground="#666666").grid(row=4, column=0)
+        ttk.Label(self, textvariable=self.hint_var, foreground="#666666").grid(row=5, column=0)
 
     def refresh(self):
         last_page = self.controller.config_store.get("ui", "last_page", default="split")
@@ -58,6 +73,38 @@ class HomePage(ttk.Frame):
         state = "normal" if enabled else "disabled"
         self.split_button.configure(state=state)
         self.restore_button.configure(state=state)
+        self.check_update_button.configure(state=state)
+
+
+def _normalize_version(version: str) -> tuple[int, ...]:
+    normalized = version.strip().lstrip("vV")
+    parts = []
+    for part in normalized.split("."):
+        digits = []
+        for char in part:
+            if char.isdigit():
+                digits.append(char)
+            else:
+                break
+        parts.append(int("".join(digits) or "0"))
+    return tuple(parts)
+
+
+def _fetch_latest_release_info() -> dict[str, str]:
+    request = urllib.request.Request(
+        LATEST_RELEASE_API,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "lan-zou-zip-tool-gui",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return {
+        "tag_name": str(data.get("tag_name", "")).strip(),
+        "html_url": str(data.get("html_url", "")).strip() or RELEASES_PAGE_URL,
+        "name": str(data.get("name", "")).strip(),
+    }
 
 
 class MainApp(tk.Tk):
@@ -132,6 +179,45 @@ class MainApp(tk.Tk):
 
     def refresh_navigation_state(self):
         self.home_page.set_navigation_enabled(not self.is_busy())
+
+    def check_for_updates(self):
+        if self.is_busy():
+            return
+        self.home_page.check_update_button.configure(state="disabled")
+        self.home_page.hint_var.set("正在检查更新...")
+        threading.Thread(target=self._run_update_check, daemon=True).start()
+
+    def _run_update_check(self):
+        try:
+            release_info = _fetch_latest_release_info()
+            self.after(0, lambda: self._finish_update_check(release_info, None))
+        except urllib.error.URLError as e:
+            self.after(0, lambda: self._finish_update_check(None, f"无法连接更新服务器：{e.reason}"))
+        except Exception as e:
+            self.after(0, lambda: self._finish_update_check(None, f"检查更新失败：{e}"))
+
+    def _finish_update_check(self, release_info, error_message):
+        self.home_page.refresh()
+        self.home_page.check_update_button.configure(state="normal")
+        if error_message:
+            messagebox.showerror("检查更新", error_message)
+            return
+        self._show_update_result(release_info or {})
+
+    def _show_update_result(self, release_info):
+        current_version = get_app_version()
+        latest_tag = release_info.get("tag_name", "")
+        latest_version = latest_tag.lstrip("vV")
+        if latest_tag and _normalize_version(latest_version) > _normalize_version(current_version):
+            detail_name = release_info.get("name") or latest_tag
+            should_open = messagebox.askyesno(
+                "发现新版本",
+                f"当前版本：v{current_version}\n最新版本：{detail_name}\n\n是否打开发布页面？",
+            )
+            if should_open:
+                webbrowser.open(release_info.get("html_url") or RELEASES_PAGE_URL)
+            return
+        messagebox.showinfo("检查更新", f"当前已是最新版本：v{current_version}")
 
     def on_close(self):
         if self.is_busy():

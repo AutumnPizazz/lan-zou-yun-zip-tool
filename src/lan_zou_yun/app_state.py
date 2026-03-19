@@ -6,6 +6,9 @@ from typing import Any
 
 APP_EXE_NAME = "lan_zou_zip_tool_gui.exe"
 APP_CONFIG_NAME = "lan_zou_zip_tool_gui.json"
+GITHUB_REPO = "AutumnPizazz/lan-zou-yun-zip-tool"
+LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
 DEFAULT_CONFIG = {
     "ui": {
         "last_page": "split",
@@ -91,6 +94,9 @@ __all__ = [
     "APP_EXE_NAME",
     "AppConfig",
     "DEFAULT_CONFIG",
+    "GITHUB_REPO",
+    "LATEST_RELEASE_API",
+    "RELEASES_PAGE_URL",
     "get_bundled_base_dir",
     "get_config_path",
     "get_runtime_base_dir",
