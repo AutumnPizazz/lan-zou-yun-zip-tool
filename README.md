@@ -81,7 +81,7 @@ lan_zou_yun/
 ## 开发环境
 
 - Windows
-- Python 3.13
+- Python 3.14
 - Poetry
 - PyInstaller
 
