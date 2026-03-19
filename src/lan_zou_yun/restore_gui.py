@@ -250,9 +250,16 @@ class App(tk.Tk):
 
     def on_select_save(self, temp_zip, manifest):
         temp_dir = Path(temp_zip).parent
-        default_name = manifest.get("source", {}).get("zip_name") or "output.zip"
+        source_info = manifest.get("source", {})
+        zip_used = bool(source_info.get("zip_used"))
+        default_name = (
+            source_info.get("zip_name")
+            if zip_used
+            else source_info.get("name") or "output.dat"
+        )
+        default_ext = ".zip" if zip_used else Path(default_name).suffix or ".dat"
         save_path = filedialog.asksaveasfilename(
-            defaultextension=".zip",
+            defaultextension=default_ext,
             initialfile=default_name,
         )
         if not save_path:
@@ -263,7 +270,7 @@ class App(tk.Tk):
         shutil.move(temp_zip, save_path)
         self._append_log(f"已保存：{save_path}")
 
-        if messagebox.askyesno("提示", "是否自动解压？"):
+        if zip_used and messagebox.askyesno("提示", "是否自动解压？"):
             out_dir = filedialog.askdirectory()
             if out_dir:
                 with zipfile.ZipFile(save_path, "r") as zf:
