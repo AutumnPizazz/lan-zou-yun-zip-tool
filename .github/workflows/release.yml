@@ -27,6 +27,15 @@ jobs:
       - name: 安装依赖
         run: poetry install --with dev
 
+      - name: 校验标签版本
+        shell: pwsh
+        run: |
+          $tagVersion = "${{ github.ref_name }}".TrimStart("v")
+          $projectVersion = poetry version --short
+          if ($tagVersion -ne $projectVersion) {
+            throw "标签版本 v$tagVersion 与 pyproject.toml 中的版本 $projectVersion 不一致"
+          }
+
       - name: 构建 split_gui
         run: poetry run pyinstaller split_gui.spec --clean
 

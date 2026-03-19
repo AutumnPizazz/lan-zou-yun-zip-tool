@@ -1,13 +1,14 @@
-from importlib.metadata import PackageNotFoundError, version
+from functools import lru_cache
+from pathlib import Path
+import tomllib
 
 
-__all__ = ["__version__", "get_app_version"]
-
-__version__ = "0.1.0"
+__all__ = ["get_app_version"]
 
 
+@lru_cache(maxsize=1)
 def get_app_version():
-    try:
-        return version("lan-zou-yun")
-    except PackageNotFoundError:
-        return __version__
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    with pyproject_path.open("rb") as f:
+        data = tomllib.load(f)
+    return data["tool"]["poetry"]["version"]
