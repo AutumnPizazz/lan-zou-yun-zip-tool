@@ -21,7 +21,7 @@ from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import PBKDF2
 
 
-ALLOWED_EXTS = [".pkg", ".cpk", ".txt", ".dat", ".conf"]
+ALLOWED_EXTS = [".txt"]
 PART_SIZE_MB_DEFAULT = 49
 CHUNK_SIZE = 4 * 1024 * 1024
 MAGIC = b"LZYA1"
@@ -197,7 +197,7 @@ def worker(state, q):
                 "parts": parts,
             }
 
-            build_manifest(out_dir / "manifest.dat", manifest)
+            build_manifest(out_dir / "manifest.txt", manifest)
             _log(q, "清单已生成")
             copy_restore_exe(out_dir, q=q)
             _log(q, f"完成，输出目录：{out_dir}")

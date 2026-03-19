@@ -185,7 +185,7 @@ class App(tk.Tk):
     def start(self):
         manifest = self.manifest_path.get()
         if not manifest:
-            auto = Path.cwd() / "manifest.dat"
+            auto = Path.cwd() / "manifest.txt"
             if auto.exists():
                 manifest = str(auto)
                 self.manifest_path.set(manifest)
@@ -255,9 +255,9 @@ class App(tk.Tk):
         default_name = (
             source_info.get("zip_name")
             if zip_used
-            else source_info.get("name") or "output.dat"
+            else source_info.get("name") or "output.txt"
         )
-        default_ext = ".zip" if zip_used else Path(default_name).suffix or ".dat"
+        default_ext = ".zip" if zip_used else Path(default_name).suffix or ".txt"
         save_path = filedialog.asksaveasfilename(
             defaultextension=default_ext,
             initialfile=default_name,
