@@ -20,6 +20,7 @@ from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import PBKDF2
 
+from lan_zou_yun import get_app_version
 from lan_zou_yun.gui_common import (
     ProgressPanelMixin,
     emit_log,
@@ -282,7 +283,7 @@ def worker(state, q):
 class App(tk.Tk, ProgressPanelMixin):
     def __init__(self):
         super().__init__()
-        self.title("蓝奏云分片助手 - 分片工具")
+        self.title(f"蓝奏云分片助手 v{get_app_version()} - 分片工具")
         self.geometry("680x500")
         self.resizable(False, False)
 
