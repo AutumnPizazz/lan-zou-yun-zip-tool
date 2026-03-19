@@ -17,6 +17,14 @@ from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import PBKDF2
 
+from lan_zou_yun.gui_common import (
+    ProgressPanelMixin,
+    emit_log,
+    emit_progress,
+    format_size,
+    overall_percent,
+)
+
 
 CHUNK_SIZE = 4 * 1024 * 1024
 MAGIC = b"LZYA1"
@@ -25,27 +33,27 @@ NONCE_LEN = 12
 TAG_LEN = 16
 
 
-def _log(q, msg):
-    if q is not None:
-        q.put(("log", msg))
-
-
 def _pbkdf2_key(password, salt, iterations):
     return PBKDF2(password, salt, dkLen=32, count=iterations, hmac_hash_module=SHA256)
 
 
-def sha256_file(path):
+def sha256_file(path, progress_callback=None):
     h = hashlib.sha256()
+    processed = 0
+    total = os.path.getsize(path)
     with open(path, "rb") as f:
         while True:
             chunk = f.read(CHUNK_SIZE)
             if not chunk:
                 break
             h.update(chunk)
+            processed += len(chunk)
+            if progress_callback is not None:
+                progress_callback(processed, total)
     return h.hexdigest()
 
 
-def decrypt_file(enc_path, out_path, password, q=None):
+def decrypt_file(enc_path, out_path, password, q=None, progress_callback=None):
     total = os.path.getsize(enc_path)
     header_len = len(MAGIC) + SALT_LEN + NONCE_LEN + 4
     if total < header_len + TAG_LEN:
@@ -74,7 +82,9 @@ def decrypt_file(enc_path, out_path, password, q=None):
                 f_out.write(data)
                 remaining -= len(chunk)
                 processed += len(chunk)
-                _log(q, f"解密中 {processed}/{total} 字节")
+                emit_log(q, f"解密中 {processed}/{total} 字节")
+                if progress_callback is not None:
+                    progress_callback(processed, total)
 
             tag = f_in.read(TAG_LEN)
             try:
@@ -87,8 +97,10 @@ def manifest_requires_password(manifest):
     return bool(manifest.get("password_required", True))
 
 
-def verify_parts(base_dir, manifest, q=None):
+def verify_parts(base_dir, manifest, q=None, progress_callback=None):
     parts = manifest.get("parts", [])
+    total_bytes = sum(part["size"] for part in parts)
+    processed_bytes = 0
     for part in parts:
         name = part["name"]
         path = base_dir / name
@@ -96,14 +108,35 @@ def verify_parts(base_dir, manifest, q=None):
             raise FileNotFoundError(f"缺少分片：{name}")
         if path.stat().st_size != part["size"]:
             raise ValueError(f"分片大小不一致：{name}")
-        sha = sha256_file(path)
+        part_base = processed_bytes
+        sha = sha256_file(
+            path,
+            progress_callback=lambda current, total, part_name=name, base=part_base: (
+                progress_callback(
+                    base + current,
+                    total_bytes,
+                    f"正在校验 {part_name}（{format_size(base + current)} / {format_size(total_bytes)}）",
+                )
+                if progress_callback is not None
+                else emit_progress(
+                    q,
+                    "校验分片",
+                    base + current,
+                    total_bytes,
+                    f"正在校验 {part_name}（{format_size(base + current)} / {format_size(total_bytes)}）",
+                )
+            ),
+        )
         if sha.lower() != part["sha256"].lower():
             raise ValueError(f"分片校验失败：{name}")
-        _log(q, f"校验通过：{name}")
+        processed_bytes += part["size"]
+        emit_log(q, f"校验通过：{name}")
 
 
-def rebuild_encrypted(base_dir, manifest, out_path, q=None):
+def rebuild_encrypted(base_dir, manifest, out_path, q=None, progress_callback=None):
     parts = sorted(manifest.get("parts", []), key=lambda x: x["index"])
+    total_bytes = sum(part["size"] for part in parts)
+    processed_bytes = 0
     with open(out_path, "wb") as f_out:
         for part in parts:
             path = base_dir / part["name"]
@@ -113,7 +146,22 @@ def rebuild_encrypted(base_dir, manifest, out_path, q=None):
                     if not chunk:
                         break
                     f_out.write(chunk)
-            _log(q, f"已合并：{part['name']}")
+                    processed_bytes += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(
+                            processed_bytes,
+                            total_bytes,
+                            f"{format_size(processed_bytes)} / {format_size(total_bytes)}",
+                        )
+                    else:
+                        emit_progress(
+                            q,
+                            "合并分片",
+                            processed_bytes,
+                            total_bytes,
+                            f"{format_size(processed_bytes)} / {format_size(total_bytes)}",
+                        )
+            emit_log(q, f"已合并：{part['name']}")
 
 
 def worker(state, q):
@@ -126,18 +174,81 @@ def worker(state, q):
         with open(manifest_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
 
-        _log(q, "开始校验分片")
-        verify_parts(base_dir, manifest, q=q)
+        phases = [
+            ("校验分片", 0.35),
+            ("合并分片", 0.30),
+            ("解密文件", 0.30),
+            ("等待保存", 0.05),
+        ]
+        phase_offsets = {}
+        current_offset = 0.0
+        for phase_name, weight in phases:
+            phase_offsets[phase_name] = (current_offset, weight)
+            current_offset += weight
+
+        emit_log(q, "开始校验分片")
+        verify_total = sum(part["size"] for part in manifest.get("parts", []))
+        verify_start, verify_span = phase_offsets["校验分片"]
+        emit_progress(q, "校验分片", 0, verify_total, "正在检查所有分片", verify_start)
+        verify_parts(
+            base_dir,
+            manifest,
+            q=q,
+            progress_callback=lambda current, total, detail: emit_progress(
+                q,
+                "校验分片",
+                current,
+                total,
+                detail,
+                overall_percent(current, total, verify_start, verify_span),
+            ),
+        )
+        emit_progress(q, "校验分片", verify_total, verify_total, "分片校验完成", verify_start + verify_span)
 
         temp_dir = tempfile.mkdtemp()
         try:
             enc_path = Path(temp_dir) / "encrypted.dat"
-            _log(q, "开始合并分片")
-            rebuild_encrypted(base_dir, manifest, enc_path, q=q)
+            emit_log(q, "开始合并分片")
+            merge_total = sum(part["size"] for part in manifest.get("parts", []))
+            merge_start, merge_span = phase_offsets["合并分片"]
+            emit_progress(q, "合并分片", 0, merge_total, "正在写入合并文件", merge_start)
+            rebuild_encrypted(
+                base_dir,
+                manifest,
+                enc_path,
+                q=q,
+                progress_callback=lambda current, total, detail: emit_progress(
+                    q,
+                    "合并分片",
+                    current,
+                    total,
+                    detail,
+                    overall_percent(current, total, merge_start, merge_span),
+                ),
+            )
+            emit_progress(q, "合并分片", merge_total, merge_total, "分片合并完成", merge_start + merge_span)
 
-            _log(q, "开始解密")
+            emit_log(q, "开始解密")
             zip_path = Path(temp_dir) / "output.zip"
-            decrypt_file(enc_path, zip_path, state["password"], q=q)
+            decrypt_total = enc_path.stat().st_size
+            decrypt_start, decrypt_span = phase_offsets["解密文件"]
+            emit_progress(q, "解密文件", 0, decrypt_total, "正在恢复原始内容", decrypt_start)
+            decrypt_file(
+                enc_path,
+                zip_path,
+                state["password"],
+                q=q,
+                progress_callback=lambda current, total: emit_progress(
+                    q,
+                    "解密文件",
+                    current,
+                    total,
+                    f"{format_size(current)} / {format_size(total)}",
+                    overall_percent(current, total, decrypt_start, decrypt_span),
+                ),
+            )
+            wait_start, wait_span = phase_offsets["等待保存"]
+            emit_progress(q, "等待保存", 1, 1, "请选择文件保存位置", wait_start + wait_span)
 
             q.put(("select_save", str(zip_path), manifest))
         finally:
@@ -146,14 +257,15 @@ def worker(state, q):
         q.put(("error", str(e)))
 
 
-class App(tk.Tk):
+class App(tk.Tk, ProgressPanelMixin):
     def __init__(self):
         super().__init__()
         self.title("蓝奏云分片助手 - 还原工具")
-        self.geometry("640x420")
+        self.geometry("680x500")
         self.resizable(False, False)
 
         self.manifest_path = tk.StringVar()
+        self._init_progress_state("请选择清单后开始")
         self.queue: queue.Queue[tuple[Any, ...]] = queue.Queue()
         self._build_ui()
         self._schedule_poll()
@@ -163,30 +275,22 @@ class App(tk.Tk):
         frm.pack(fill="both", expand=True)
 
         ttk.Label(frm, text="清单文件：").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.manifest_path, width=50).grid(row=0, column=1, sticky="w")
-        ttk.Button(frm, text="选择", command=self.choose_manifest).grid(row=0, column=2, padx=5)
+        self.manifest_entry = ttk.Entry(frm, textvariable=self.manifest_path, width=50)
+        self.manifest_entry.grid(row=0, column=1, sticky="w")
+        self.manifest_button = ttk.Button(frm, text="选择", command=self.choose_manifest)
+        self.manifest_button.grid(row=0, column=2, padx=5)
 
-        self.progress = ttk.Progressbar(frm, mode="indeterminate")
-        self.progress.grid(row=1, column=0, columnspan=3, sticky="we", pady=10)
-
-        ttk.Button(frm, text="开始还原", command=self.start).grid(row=2, column=0, columnspan=3, pady=5)
-
-        self.log_text = tk.Text(frm, height=12, width=70)
-        self.log_text.grid(row=3, column=0, columnspan=3, pady=5)
-        self.log_text.configure(state="disabled")
+        self._build_progress_panel(frm, start_row=1, button_text="开始还原", button_command=self.start)
+        self.inputs = [self.manifest_entry, self.manifest_button, self.start_button]
 
     def choose_manifest(self):
         path = filedialog.askopenfilename()
         if path:
             self.manifest_path.set(path)
 
-    def _append_log(self, msg):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", msg + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
-
     def start(self):
+        if self.is_running:
+            return
         manifest = self.manifest_path.get()
         if not manifest:
             auto = Path.cwd() / "manifest.txt"
@@ -204,7 +308,8 @@ class App(tk.Tk):
         if password is None:
             return
 
-        self.progress.start(10)
+        self._reset_progress("正在初始化任务")
+        self._set_running(True)
         state = {"manifest": manifest, "password": password}
         t = threading.Thread(target=worker, args=(state, self.queue), daemon=True)
         t.start()
@@ -245,11 +350,13 @@ class App(tk.Tk):
                 item = self.queue.get_nowait()
                 if item[0] == "log":
                     self._append_log(item[1])
+                elif item[0] == "progress":
+                    self._handle_progress(item[1])
                 elif item[0] == "error":
-                    self.progress.stop()
+                    self._set_running(False)
                     messagebox.showerror("错误", item[1])
                 elif item[0] == "select_save":
-                    self.progress.stop()
+                    self._set_running(False)
                     self.on_select_save(item[1], item[2])
         except queue.Empty:
             pass
@@ -274,6 +381,7 @@ class App(tk.Tk):
             shutil.rmtree(temp_dir, ignore_errors=True)
             return
 
+        self._mark_complete("还原完成", "文件已保存")
         shutil.move(temp_zip, save_path)
         self._append_log(f"已保存：{save_path}")
 

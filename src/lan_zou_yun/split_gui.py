@@ -20,6 +20,14 @@ from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
 from Crypto.Protocol.KDF import PBKDF2
 
+from lan_zou_yun.gui_common import (
+    ProgressPanelMixin,
+    emit_log,
+    emit_progress,
+    format_size,
+    overall_percent,
+)
+
 
 ALLOWED_EXTS = [".txt"]
 PART_SIZE_MB_DEFAULT = 49
@@ -31,16 +39,11 @@ TAG_LEN = 16
 KDF_ITERATIONS = 200_000
 
 
-def _log(q, msg):
-    if q is not None:
-        q.put(("log", msg))
-
-
 def _pbkdf2_key(password, salt, iterations):
     return PBKDF2(password, salt, dkLen=32, count=iterations, hmac_hash_module=SHA256)
 
 
-def encrypt_file(src_path, out_path, password, q=None):
+def encrypt_file(src_path, out_path, password, q=None, progress_callback=None):
     salt = secrets.token_bytes(SALT_LEN)
     nonce = secrets.token_bytes(NONCE_LEN)
     key = _pbkdf2_key(password, salt, KDF_ITERATIONS)
@@ -59,7 +62,9 @@ def encrypt_file(src_path, out_path, password, q=None):
             enc = cipher.encrypt(chunk)
             f_out.write(enc)
             processed += len(chunk)
-            _log(q, f"加密中 {processed}/{total} 字节")
+            emit_log(q, f"加密中 {processed}/{total} 字节")
+            if progress_callback is not None:
+                progress_callback(processed, total)
 
     tag = cipher.digest()
     with open(out_path, "ab") as f_out:
@@ -87,7 +92,7 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def split_file(enc_path, out_dir, part_size_bytes, q=None):
+def split_file(enc_path, out_dir, part_size_bytes, q=None, progress_callback=None):
     parts = []
     total = os.path.getsize(enc_path)
     processed = 0
@@ -115,7 +120,9 @@ def split_file(enc_path, out_dir, part_size_bytes, q=None):
             )
             index += 1
             processed += size
-            _log(q, f"分片中 {processed}/{total} 字节")
+            emit_log(q, f"分片中 {processed}/{total} 字节")
+            if progress_callback is not None:
+                progress_callback(processed, total)
 
     return parts
 
@@ -135,9 +142,9 @@ def copy_restore_exe(out_dir, q=None):
     for cand in candidates:
         if cand.exists():
             shutil.copy2(cand, out_dir / "restore_gui.exe")
-            _log(q, "已复制 restore_gui.exe")
+            emit_log(q, "已复制 restore_gui.exe")
             return True
-    _log(q, "未找到 restore_gui.exe，已跳过复制")
+    emit_log(q, "未找到 restore_gui.exe，已跳过复制")
     return False
 
 
@@ -157,28 +164,89 @@ def worker(state, q):
 
         temp_dir = tempfile.mkdtemp()
         original_size = src.stat().st_size if src.is_file() else 0
+        phases = [
+            ("压缩文件夹", 0.25),
+            ("加密文件", 0.40),
+            ("生成分片", 0.30),
+            ("收尾处理", 0.05),
+        ]
+        if not src.is_dir():
+            phases = [
+                ("加密文件", 0.60),
+                ("生成分片", 0.35),
+                ("收尾处理", 0.05),
+            ]
+        phase_offsets = {}
+        current_offset = 0.0
+        for phase_name, weight in phases:
+            phase_offsets[phase_name] = (current_offset, weight)
+            current_offset += weight
 
         try:
             if src.is_dir():
-                _log(q, "检测到文件夹，开始打包 ZIP")
+                original_size = sum(p.stat().st_size for p in src.rglob("*") if p.is_file())
+                emit_log(q, "检测到文件夹，开始打包 ZIP")
                 temp_zip_path = Path(temp_dir) / f"{src.name}.zip"
+                compressed = 0
+                compress_start, compress_span = phase_offsets["压缩文件夹"]
+                emit_progress(q, "压缩文件夹", 0, original_size, "正在准备 ZIP", compress_start)
                 with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                     for root, _, files in os.walk(src):
                         for name in files:
                             full = Path(root) / name
                             rel = full.relative_to(src)
                             zf.write(full, rel.as_posix())
+                            compressed += full.stat().st_size
+                            emit_progress(
+                                q,
+                                "压缩文件夹",
+                                compressed,
+                                original_size,
+                                f"{format_size(compressed)} / {format_size(original_size)}",
+                                overall_percent(compressed, original_size, compress_start, compress_span),
+                            )
                 src_to_encrypt = temp_zip_path
-                original_size = sum(p.stat().st_size for p in src.rglob("*") if p.is_file())
             else:
                 src_to_encrypt = src
 
-            _log(q, "开始加密")
+            emit_log(q, "开始加密")
             enc_path = Path(temp_dir) / "encrypted.dat"
-            kdf_info = encrypt_file(src_to_encrypt, enc_path, password, q=q)
+            encrypt_total = os.path.getsize(src_to_encrypt)
+            encrypt_start, encrypt_span = phase_offsets["加密文件"]
+            emit_progress(q, "加密文件", 0, encrypt_total, "正在写入加密数据", encrypt_start)
+            kdf_info = encrypt_file(
+                src_to_encrypt,
+                enc_path,
+                password,
+                q=q,
+                progress_callback=lambda current, total: emit_progress(
+                    q,
+                    "加密文件",
+                    current,
+                    total,
+                    f"{format_size(current)} / {format_size(total)}",
+                    overall_percent(current, total, encrypt_start, encrypt_span),
+                ),
+            )
 
-            _log(q, "开始分片")
-            parts = split_file(enc_path, out_dir, part_size, q=q)
+            emit_log(q, "开始分片")
+            split_total = enc_path.stat().st_size
+            split_start, split_span = phase_offsets["生成分片"]
+            emit_progress(q, "生成分片", 0, split_total, "正在写入分片文件", split_start)
+            parts = split_file(
+                enc_path,
+                out_dir,
+                part_size,
+                q=q,
+                progress_callback=lambda current, total: emit_progress(
+                    q,
+                    "生成分片",
+                    current,
+                    total,
+                    f"{format_size(current)} / {format_size(total)}",
+                    overall_percent(current, total, split_start, split_span),
+                ),
+            )
 
             manifest = {
                 "version": "1.0",
@@ -199,9 +267,11 @@ def worker(state, q):
             }
 
             build_manifest(out_dir / "manifest.txt", manifest)
-            _log(q, "清单已生成")
+            emit_log(q, "清单已生成")
             copy_restore_exe(out_dir, q=q)
-            _log(q, f"完成，输出目录：{out_dir}")
+            finalize_start, finalize_span = phase_offsets["收尾处理"]
+            emit_progress(q, "收尾处理", 1, 1, "正在生成清单并复制还原工具", finalize_start + finalize_span)
+            emit_log(q, f"完成，输出目录：{out_dir}")
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
         q.put(("done", "处理完成"))
@@ -209,11 +279,11 @@ def worker(state, q):
         q.put(("error", str(e)))
 
 
-class App(tk.Tk):
+class App(tk.Tk, ProgressPanelMixin):
     def __init__(self):
         super().__init__()
         self.title("蓝奏云分片助手 - 分片工具")
-        self.geometry("640x420")
+        self.geometry("680x500")
         self.resizable(False, False)
 
         self.src_path = tk.StringVar()
@@ -221,6 +291,7 @@ class App(tk.Tk):
         self.password = tk.StringVar()
         self.password2 = tk.StringVar()
         self.part_size_mb = tk.StringVar(value=str(PART_SIZE_MB_DEFAULT))
+        self._init_progress_state("请选择文件或文件夹后开始")
 
         self.queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._build_ui()
@@ -231,30 +302,40 @@ class App(tk.Tk):
         frm.pack(fill="both", expand=True)
 
         ttk.Label(frm, text="选择文件/文件夹：").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.src_path, width=50).grid(row=0, column=1, sticky="w")
-        ttk.Button(frm, text="选择", command=self.choose_src).grid(row=0, column=2, padx=5)
+        self.src_entry = ttk.Entry(frm, textvariable=self.src_path, width=50)
+        self.src_entry.grid(row=0, column=1, sticky="w")
+        self.src_button = ttk.Button(frm, text="选择", command=self.choose_src)
+        self.src_button.grid(row=0, column=2, padx=5)
 
         ttk.Label(frm, text="输出目录：").grid(row=1, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.out_dir, width=50).grid(row=1, column=1, sticky="w")
-        ttk.Button(frm, text="选择", command=self.choose_out).grid(row=1, column=2, padx=5)
+        self.out_entry = ttk.Entry(frm, textvariable=self.out_dir, width=50)
+        self.out_entry.grid(row=1, column=1, sticky="w")
+        self.out_button = ttk.Button(frm, text="选择", command=self.choose_out)
+        self.out_button.grid(row=1, column=2, padx=5)
 
         ttk.Label(frm, text="分片大小(MB)：").grid(row=2, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.part_size_mb, width=10).grid(row=2, column=1, sticky="w")
+        self.part_size_entry = ttk.Entry(frm, textvariable=self.part_size_mb, width=10)
+        self.part_size_entry.grid(row=2, column=1, sticky="w")
 
         ttk.Label(frm, text="密码（可留空）：").grid(row=3, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.password, show="*", width=30).grid(row=3, column=1, sticky="w")
+        self.password_entry = ttk.Entry(frm, textvariable=self.password, show="*", width=30)
+        self.password_entry.grid(row=3, column=1, sticky="w")
 
         ttk.Label(frm, text="确认密码：").grid(row=4, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.password2, show="*", width=30).grid(row=4, column=1, sticky="w")
+        self.password2_entry = ttk.Entry(frm, textvariable=self.password2, show="*", width=30)
+        self.password2_entry.grid(row=4, column=1, sticky="w")
 
-        self.progress = ttk.Progressbar(frm, mode="indeterminate")
-        self.progress.grid(row=5, column=0, columnspan=3, sticky="we", pady=10)
-
-        ttk.Button(frm, text="开始处理", command=self.start).grid(row=6, column=0, columnspan=3, pady=5)
-
-        self.log_text = tk.Text(frm, height=10, width=70)
-        self.log_text.grid(row=7, column=0, columnspan=3, pady=5)
-        self.log_text.configure(state="disabled")
+        self._build_progress_panel(frm, start_row=5, button_text="开始处理", button_command=self.start)
+        self.inputs = [
+            self.src_entry,
+            self.src_button,
+            self.out_entry,
+            self.out_button,
+            self.part_size_entry,
+            self.password_entry,
+            self.password2_entry,
+            self.start_button,
+        ]
 
     def choose_src(self):
         path = filedialog.askopenfilename()
@@ -268,13 +349,9 @@ class App(tk.Tk):
         if path:
             self.out_dir.set(path)
 
-    def _append_log(self, msg):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", msg + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
-
     def start(self):
+        if self.is_running:
+            return
         if not self.src_path.get():
             messagebox.showwarning("提示", "请先选择文件或文件夹")
             return
@@ -292,7 +369,8 @@ class App(tk.Tk):
             messagebox.showwarning("提示", "分片大小格式不正确")
             return
 
-        self.progress.start(10)
+        self._reset_progress("正在初始化任务")
+        self._set_running(True)
         state = {
             "src": self.src_path.get(),
             "out_dir": self.out_dir.get(),
@@ -312,11 +390,14 @@ class App(tk.Tk):
                 item = self.queue.get_nowait()
                 if item[0] == "log":
                     self._append_log(item[1])
+                elif item[0] == "progress":
+                    self._handle_progress(item[1])
                 elif item[0] == "error":
-                    self.progress.stop()
+                    self._set_running(False)
                     messagebox.showerror("错误", item[1])
                 elif item[0] == "done":
-                    self.progress.stop()
+                    self._mark_complete("处理完成", "任务已完成")
+                    self._set_running(False)
                     messagebox.showinfo("完成", item[1])
         except queue.Empty:
             pass
