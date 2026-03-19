@@ -5,7 +5,7 @@ import urllib.request
 import webbrowser
 import json
 import ctypes
-from typing import Any, Callable, cast
+from typing import Any, Callable, Literal, cast
 
 import tkinter as tk
 from tkinter import TclError, messagebox, ttk
@@ -130,6 +130,8 @@ class MainApp(tk.Tk):
         self.config_store.load()
         self._font_scale_min, self._font_scale_max, self._font_scale_step = get_font_scale_limits()
         self._font_scale = 1.0
+        self._named_fonts: dict[str, tkfont.Font] = {}
+        self._named_font_bases: dict[str, int] = {}
         self._apply_window_geometry()
         self.font_scale_var = tk.StringVar()
         self._configure_styles()
@@ -196,10 +198,15 @@ class MainApp(tk.Tk):
 
     def _configure_styles(self):
         style = ttk.Style(self)
-        style.configure("Header.TLabel", font=("Microsoft YaHei UI", 18, "bold"))
-        style.configure("Section.TLabel", font=("Microsoft YaHei UI", 12, "bold"))
+        self._create_named_font("AppHeaderFont", 18, "bold")
+        self._create_named_font("AppSectionFont", 12, "bold")
+        self._create_named_font("AppPhaseFont", 10, "bold")
+        self._create_named_font("AppCardFont", 11, "normal")
+        style.configure("Header.TLabel", font="AppHeaderFont")
+        style.configure("Section.TLabel", font="AppSectionFont")
+        style.configure("Phase.TLabel", font="AppPhaseFont")
         style.configure("Muted.TLabel", foreground="#666666")
-        style.configure("Card.TButton", font=("Microsoft YaHei UI", 11))
+        style.configure("Card.TButton", font="AppCardFont")
         style.configure("Hint.TLabel", foreground="#666666")
 
     @staticmethod
@@ -319,6 +326,11 @@ class MainApp(tk.Tk):
         self._font_scale = max(self._font_scale_min, min(self._font_scale, self._font_scale_max))
         self._apply_font_scale()
 
+    def _create_named_font(self, name: str, base_size: int, weight: Literal["normal", "bold"]):
+        font_obj = tkfont.Font(name=name, exists=False, family="Microsoft YaHei UI", size=base_size, weight=weight)
+        self._named_fonts[name] = font_obj
+        self._named_font_bases[name] = base_size
+
     def _apply_font_scale(self):
         size = int(round(self._font_base_size * self._font_scale))
         size = max(size, 9)
@@ -335,6 +347,14 @@ class MainApp(tk.Tk):
             try:
                 tkfont.nametofont(name).configure(size=size)
             except (TclError, KeyError):
+                continue
+        for name, font_obj in self._named_fonts.items():
+            base = self._named_font_bases.get(name, 10)
+            scaled = int(round(base * self._font_scale))
+            scaled = max(scaled, 9)
+            try:
+                font_obj.configure(size=scaled)
+            except TclError:
                 continue
         self.font_scale_var.set(f"{int(self._font_scale * 100)}%")
 

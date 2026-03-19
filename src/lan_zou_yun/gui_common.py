@@ -55,7 +55,7 @@ class ProgressPanelMixin:
         self.inputs = []
 
     def _build_progress_panel(self, parent, start_row, button_text, button_command, log_height=12, log_width=74):
-        ttk.Label(parent, textvariable=self.phase_var, font=("Microsoft YaHei UI", 10, "bold")).grid(
+        ttk.Label(parent, textvariable=self.phase_var, style="Phase.TLabel").grid(
             row=start_row, column=0, columnspan=3, sticky="w", pady=(12, 4)
         )
 
