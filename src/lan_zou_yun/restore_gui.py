@@ -267,16 +267,22 @@ class RestorePage(ttk.Frame, ProgressPanelMixin):
         self._schedule_poll()
 
     def _build_ui(self):
+        self.columnconfigure(1, weight=1)
         header = ttk.Frame(self)
         header.grid(row=0, column=0, columnspan=3, sticky="we", pady=(0, 10))
         header.columnconfigure(1, weight=1)
         self.back_button = ttk.Button(header, text="返回首页", command=self.on_back)
         self.back_button.grid(row=0, column=0, sticky="w")
-        ttk.Label(header, text="还原", font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=1)
+        ttk.Label(header, text="还原", style="Section.TLabel").grid(row=0, column=1)
+        zoom_bar = self.controller.build_zoom_controls(header)
+        zoom_bar.grid(row=0, column=2, sticky="e")
+        ttk.Label(header, text="提示：按 Ctrl+鼠标滚轮 或 点击按钮缩放文字", style="Hint.TLabel").grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(6, 0)
+        )
 
         ttk.Label(self, text="清单文件：").grid(row=1, column=0, sticky="w")
         self.manifest_entry = ttk.Entry(self, textvariable=self.manifest_path, width=50)
-        self.manifest_entry.grid(row=1, column=1, sticky="w")
+        self.manifest_entry.grid(row=1, column=1, sticky="ew")
         self.manifest_button = ttk.Button(self, text="选择", command=self.choose_manifest)
         self.manifest_button.grid(row=1, column=2, padx=5)
 

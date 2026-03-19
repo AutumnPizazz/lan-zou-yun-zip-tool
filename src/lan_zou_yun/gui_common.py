@@ -60,7 +60,7 @@ class ProgressPanelMixin:
         )
 
         self.progress = ttk.Progressbar(parent, mode="determinate", maximum=100)
-        self.progress.grid(row=start_row + 1, column=0, columnspan=3, sticky="we", pady=10)
+        self.progress.grid(row=start_row + 1, column=0, columnspan=3, sticky="ew", pady=10)
 
         ttk.Label(parent, textvariable=self.progress_var).grid(
             row=start_row + 2, column=0, columnspan=3, sticky="w"
@@ -76,7 +76,9 @@ class ProgressPanelMixin:
         self.start_button.grid(row=start_row + 5, column=0, columnspan=3, pady=5)
 
         self.log_text = tk.Text(parent, height=log_height, width=log_width)
-        self.log_text.grid(row=start_row + 6, column=0, columnspan=3, pady=5)
+        log_row = start_row + 6
+        parent.rowconfigure(log_row, weight=1)
+        self.log_text.grid(row=log_row, column=0, columnspan=3, sticky="nsew", pady=5)
         self.log_text.configure(state="disabled")
 
     def _append_log(self, msg):

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
+import tomllib
 
 
 APP_EXE_NAME = "lan_zou_zip_tool_gui.exe"
@@ -12,6 +13,9 @@ RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
 DEFAULT_CONFIG = {
     "ui": {
         "last_page": "split",
+        "window_width": 760,
+        "window_height": 620,
+        "font_scale": 1.0,
     },
     "split": {
         "last_source_path": "",
@@ -24,6 +28,10 @@ DEFAULT_CONFIG = {
         "last_extract_dir": "",
     },
 }
+
+FONT_SCALE_MIN_DEFAULT = 0.8
+FONT_SCALE_MAX_DEFAULT = 2.2
+FONT_SCALE_STEP_DEFAULT = 0.1
 
 
 def get_runtime_base_dir() -> Path:
@@ -40,6 +48,47 @@ def get_bundled_base_dir() -> Path:
 
 def get_config_path() -> Path:
     return get_runtime_base_dir() / APP_CONFIG_NAME
+
+
+def _load_ui_toml_settings() -> dict[str, Any]:
+    path = get_runtime_base_dir() / "pyproject.toml"
+    if not path.exists():
+        return {}
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    tool = data.get("tool") if isinstance(data, dict) else None
+    if not isinstance(tool, dict):
+        return {}
+    section = tool.get("lan_zou_gui")
+    return section if isinstance(section, dict) else {}
+
+
+def get_font_scale_limits() -> tuple[float, float, float]:
+    settings = _load_ui_toml_settings()
+    try:
+        min_scale = float(settings.get("font_scale_min", FONT_SCALE_MIN_DEFAULT))
+    except (TypeError, ValueError):
+        min_scale = FONT_SCALE_MIN_DEFAULT
+    try:
+        max_scale = float(settings.get("font_scale_max", FONT_SCALE_MAX_DEFAULT))
+    except (TypeError, ValueError):
+        max_scale = FONT_SCALE_MAX_DEFAULT
+    try:
+        step = float(settings.get("font_scale_step", FONT_SCALE_STEP_DEFAULT))
+    except (TypeError, ValueError):
+        step = FONT_SCALE_STEP_DEFAULT
+    if step <= 0:
+        step = FONT_SCALE_STEP_DEFAULT
+    if min_scale <= 0:
+        min_scale = FONT_SCALE_MIN_DEFAULT
+    if max_scale <= 0:
+        max_scale = FONT_SCALE_MAX_DEFAULT
+    if min_scale > max_scale:
+        min_scale, max_scale = max_scale, min_scale
+    return min_scale, max_scale, step
 
 
 def merge_defaults(data: Any, defaults: Any) -> Any:
@@ -94,9 +143,13 @@ __all__ = [
     "APP_EXE_NAME",
     "AppConfig",
     "DEFAULT_CONFIG",
+    "FONT_SCALE_MAX_DEFAULT",
+    "FONT_SCALE_MIN_DEFAULT",
+    "FONT_SCALE_STEP_DEFAULT",
     "GITHUB_REPO",
     "LATEST_RELEASE_API",
     "RELEASES_PAGE_URL",
+    "get_font_scale_limits",
     "get_bundled_base_dir",
     "get_config_path",
     "get_runtime_base_dir",

@@ -20,6 +20,11 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry.scripts]
 lan-zou-zip-tool-gui = "lan_zou_yun.main_gui:main"
 
+[tool.lan_zou_gui]
+font_scale_min = 0.2
+font_scale_max = 5.0
+font_scale_step = 0.05
+
 [[tool.poetry.source]]
 name = "tsinghua"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
