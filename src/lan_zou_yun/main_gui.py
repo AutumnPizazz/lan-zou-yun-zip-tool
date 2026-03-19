@@ -4,7 +4,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 import json
-from typing import Any
+from typing import Any, Callable, cast
 
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -187,14 +187,20 @@ class MainApp(tk.Tk):
         self.home_page.hint_var.set("正在检查更新...")
         threading.Thread(target=self._run_update_check, daemon=True).start()
 
+    def _schedule_on_ui_thread(self, callback):
+        after_func = cast(Callable[..., object], self.after)
+        after_func(0, callback)
+
     def _run_update_check(self):
         try:
             release_info = _fetch_latest_release_info()
-            self.after(0, lambda: self._finish_update_check(release_info, None))
+            self._schedule_on_ui_thread(lambda: self._finish_update_check(release_info, None))
         except urllib.error.URLError as e:
-            self.after(0, lambda: self._finish_update_check(None, f"无法连接更新服务器：{e.reason}"))
+            self._schedule_on_ui_thread(
+                lambda: self._finish_update_check(None, f"无法连接更新服务器：{e.reason}")
+            )
         except Exception as e:
-            self.after(0, lambda: self._finish_update_check(None, f"检查更新失败：{e}"))
+            self._schedule_on_ui_thread(lambda: self._finish_update_check(None, f"检查更新失败：{e}"))
 
     def _finish_update_check(self, release_info, error_message):
         self.home_page.refresh()
@@ -204,7 +210,8 @@ class MainApp(tk.Tk):
             return
         self._show_update_result(release_info or {})
 
-    def _show_update_result(self, release_info):
+    @staticmethod
+    def _show_update_result(release_info):
         current_version = get_app_version()
         latest_tag = release_info.get("tag_name", "")
         latest_version = latest_tag.lstrip("vV")
