@@ -8,7 +8,7 @@ import ctypes
 from typing import Any, Callable, cast
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import TclError, messagebox, ttk
 from tkinter import font as tkfont
 
 from lan_zou_yun import get_app_version
@@ -129,6 +129,7 @@ class MainApp(tk.Tk):
         self.config_store = AppConfig()
         self.config_store.load()
         self._font_scale_min, self._font_scale_max, self._font_scale_step = get_font_scale_limits()
+        self._font_scale = 1.0
         self._apply_window_geometry()
         self.font_scale_var = tk.StringVar()
         self._configure_styles()
@@ -159,11 +160,23 @@ class MainApp(tk.Tk):
     @staticmethod
     def _enable_windows_dpi_awareness():
         try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        except Exception:
+            shcore = ctypes.windll.shcore
+        except AttributeError:
+            shcore = None
+        if shcore is not None and hasattr(shcore, "SetProcessDpiAwareness"):
             try:
-                ctypes.windll.user32.SetProcessDPIAware()
-            except Exception:
+                shcore.SetProcessDpiAwareness(2)
+                return
+            except OSError:
+                pass
+        try:
+            user32 = ctypes.windll.user32
+        except AttributeError:
+            user32 = None
+        if user32 is not None and hasattr(user32, "SetProcessDPIAware"):
+            try:
+                user32.SetProcessDPIAware()
+            except OSError:
                 pass
 
     def _apply_tk_scaling(self):
@@ -171,7 +184,7 @@ class MainApp(tk.Tk):
             dpi = self.winfo_fpixels("1i")
             scale = max(dpi / 72.0, 1.0)
             self.tk.call("tk", "scaling", scale)
-        except Exception:
+        except TclError:
             pass
 
     def _apply_window_geometry(self):
@@ -286,7 +299,7 @@ class MainApp(tk.Tk):
             self.config_store.set("ui", "window_width", value=self.winfo_width())
             self.config_store.set("ui", "window_height", value=self.winfo_height())
             self.config_store.set("ui", "font_scale", value=self._font_scale)
-        except Exception:
+        except (TclError, ValueError):
             pass
         self.split_page.sync_config()
         self.restore_page.sync_config()
@@ -321,7 +334,7 @@ class MainApp(tk.Tk):
         ):
             try:
                 tkfont.nametofont(name).configure(size=size)
-            except Exception:
+            except (TclError, KeyError):
                 continue
         self.font_scale_var.set(f"{int(self._font_scale * 100)}%")
 
