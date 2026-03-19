@@ -1,5 +1,6 @@
 import queue
 import threading
+from typing import Any
 
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -90,18 +91,22 @@ class MainApp(tk.Tk):
         self.show_home()
 
     @staticmethod
+    def _run_background_task(target, state, task_queue):
+        try:
+            target(state, task_queue)
+            if target.__name__ == "run_split":
+                task_queue.put(("done", "处理完成"))
+        except Exception as e:
+            task_queue.put(("error", str(e)))
+
+    @staticmethod
     def start_background_task(target, state):
-        task_queue: queue.Queue[tuple] = queue.Queue()
-
-        def worker_wrapper():
-            try:
-                target(state, task_queue)
-                if target.__name__ == "run_split":
-                    task_queue.put(("done", "处理完成"))
-            except Exception as e:
-                task_queue.put(("error", str(e)))
-
-        threading.Thread(target=worker_wrapper, daemon=True).start()
+        task_queue: queue.Queue[tuple[Any, ...]] = queue.Queue()
+        threading.Thread(
+            target=MainApp._run_background_task,
+            args=(target, state, task_queue),
+            daemon=True,
+        ).start()
         return task_queue
 
     def show_home(self):

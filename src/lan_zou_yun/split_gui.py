@@ -10,7 +10,7 @@ import zipfile
 import hashlib
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, cast
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -399,7 +399,8 @@ class SplitPage(ttk.Frame, ProgressPanelMixin):
         self.queue = self.controller.start_background_task(run_split, state)
 
     def _schedule_poll(self):
-        self.after(200, self._poll_queue)
+        after_func = cast(Callable[..., object], self.after)
+        after_func(200, self._poll_queue)
 
     def _poll_queue(self):
         if self.queue is not None:

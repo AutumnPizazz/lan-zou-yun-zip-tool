@@ -7,7 +7,7 @@ import tempfile
 import zipfile
 import hashlib
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, cast
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -363,7 +363,8 @@ class RestorePage(ttk.Frame, ProgressPanelMixin):
         return result
 
     def _schedule_poll(self):
-        self.after(200, self._poll_queue)
+        after_func = cast(Callable[..., object], self.after)
+        after_func(200, self._poll_queue)
 
     def _poll_queue(self):
         if self.queue is not None:
