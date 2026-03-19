@@ -83,6 +83,10 @@ def decrypt_file(enc_path, out_path, password, q=None):
                 raise ValueError("密码错误或文件已损坏") from e
 
 
+def manifest_requires_password(manifest):
+    return bool(manifest.get("password_required", True))
+
+
 def verify_parts(base_dir, manifest, q=None):
     parts = manifest.get("parts", [])
     for part in parts:
@@ -193,7 +197,10 @@ class App(tk.Tk):
                 messagebox.showwarning("提示", "请先选择清单文件")
                 return
 
-        password = self.ask_password()
+        with open(manifest, "r", encoding="utf-8") as f:
+            manifest_data = json.load(f)
+
+        password = self.ask_password(manifest_requires_password(manifest_data))
         if password is None:
             return
 
@@ -202,7 +209,10 @@ class App(tk.Tk):
         t = threading.Thread(target=worker, args=(state, self.queue), daemon=True)
         t.start()
 
-    def ask_password(self) -> Optional[str]:
+    def ask_password(self, password_required: bool) -> Optional[str]:
+        if not password_required:
+            return ""
+
         dlg = tk.Toplevel(self)
         dlg.title("输入密码")
         dlg.geometry("300x140")
@@ -218,9 +228,6 @@ class App(tk.Tk):
 
         def on_ok():
             nonlocal result
-            if not pwd.get():
-                messagebox.showwarning("提示", "密码不能为空")
-                return
             result = pwd.get()
             dlg.destroy()
 

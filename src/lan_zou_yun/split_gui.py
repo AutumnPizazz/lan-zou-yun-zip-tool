@@ -191,6 +191,7 @@ def worker(state, q):
                     "zip_name": f"{src.name}.zip" if src.is_dir() else None,
                 },
                 "encryption": kdf_info,
+                "password_required": bool(password),
                 "encrypted_size": enc_path.stat().st_size,
                 "part_size": part_size,
                 "allowed_exts": ALLOWED_EXTS,
@@ -240,7 +241,7 @@ class App(tk.Tk):
         ttk.Label(frm, text="分片大小(MB)：").grid(row=2, column=0, sticky="w")
         ttk.Entry(frm, textvariable=self.part_size_mb, width=10).grid(row=2, column=1, sticky="w")
 
-        ttk.Label(frm, text="密码：").grid(row=3, column=0, sticky="w")
+        ttk.Label(frm, text="密码（可留空）：").grid(row=3, column=0, sticky="w")
         ttk.Entry(frm, textvariable=self.password, show="*", width=30).grid(row=3, column=1, sticky="w")
 
         ttk.Label(frm, text="确认密码：").grid(row=4, column=0, sticky="w")
@@ -279,9 +280,6 @@ class App(tk.Tk):
             return
         if not self.out_dir.get():
             messagebox.showwarning("提示", "请先选择输出目录")
-            return
-        if not self.password.get():
-            messagebox.showwarning("提示", "请输入密码")
             return
         if self.password.get() != self.password2.get():
             messagebox.showwarning("提示", "两次密码不一致")

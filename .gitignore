@@ -4,3 +4,4 @@
 /build
 split_gui.spec
 restore_gui.spec
+/src/lan_zou_yun/__pycache__
