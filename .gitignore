@@ -1,2 +1,6 @@
 /.idea
 /提示词.md
+/dist
+/build
+split_gui.spec
+restore_gui.spec
