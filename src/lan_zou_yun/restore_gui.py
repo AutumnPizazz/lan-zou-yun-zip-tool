@@ -449,6 +449,7 @@ class RestorePage(ttk.Frame, ProgressPanelMixin):
             dlg.destroy()
 
         ttk.Button(dlg, text="确定", command=on_ok).pack(pady=10)
+        entry.bind("<Return>", lambda event: on_ok())
         dlg.update_idletasks()
         dlg.minsize(dlg.winfo_reqwidth(), dlg.winfo_reqheight())
         self.wait_window(dlg)
