@@ -51,19 +51,27 @@ def get_config_path() -> Path:
 
 
 def _load_ui_toml_settings() -> dict[str, Any]:
-    path = get_runtime_base_dir() / "pyproject.toml"
-    if not path.exists():
-        return {}
-    try:
-        with path.open("rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
-    tool = data.get("tool") if isinstance(data, dict) else None
-    if not isinstance(tool, dict):
-        return {}
-    section = tool.get("lan_zou_gui")
-    return section if isinstance(section, dict) else {}
+    bundled_dir = get_bundled_base_dir()
+    runtime_dir = get_runtime_base_dir()
+    if getattr(sys, "frozen", False):
+        candidates = [bundled_dir / "pyproject.toml"]
+    else:
+        candidates = [runtime_dir / "pyproject.toml"]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            with path.open("rb") as f:
+                data = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        tool = data.get("tool") if isinstance(data, dict) else None
+        if not isinstance(tool, dict):
+            continue
+        section = tool.get("lan_zou_gui")
+        if isinstance(section, dict):
+            return section
+    return {}
 
 
 def get_font_scale_limits() -> tuple[float, float, float]:
