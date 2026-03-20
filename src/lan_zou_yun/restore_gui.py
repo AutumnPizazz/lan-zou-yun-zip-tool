@@ -431,7 +431,6 @@ class RestorePage(ttk.Frame, ProgressPanelMixin):
 
         dlg = tk.Toplevel(self)
         dlg.title("输入密码")
-        dlg.geometry("300x140")
         dlg.resizable(False, False)
         dlg.transient(self.winfo_toplevel())
         dlg.grab_set()
@@ -450,6 +449,8 @@ class RestorePage(ttk.Frame, ProgressPanelMixin):
             dlg.destroy()
 
         ttk.Button(dlg, text="确定", command=on_ok).pack(pady=10)
+        dlg.update_idletasks()
+        dlg.minsize(dlg.winfo_reqwidth(), dlg.winfo_reqheight())
         self.wait_window(dlg)
         return result
 
