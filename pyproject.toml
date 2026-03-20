@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "lan-zou-yun"
-version = "0.1.1"
+version = "0.1.2"
 description = "蓝奏云分片助手"
 authors = ["AutumnPizazz <114050365+AutumnPizazz@users.noreply.github.com>"]
 readme = "README.md"
