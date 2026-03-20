@@ -26,7 +26,7 @@ from lan_zou_yun.gui_common import (
 )
 
 
-CHUNK_SIZE = 4 * 1024 * 1024
+CHUNK_SIZE = 8 * 1024 * 1024
 MAGIC = b"LZYA1"
 SALT_LEN = 16
 NONCE_LEN = 12
@@ -164,6 +164,92 @@ def rebuild_encrypted(base_dir, manifest, out_path, q=None, progress_callback=No
             emit_log(q, f"已合并：{part['name']}")
 
 
+def _process_encrypted_bytes(data, cipher, tail, f_out):
+    if not data:
+        return tail
+    buffer = tail + data
+    if len(buffer) <= TAG_LEN:
+        return buffer
+    to_decrypt = buffer[:-TAG_LEN]
+    tail = buffer[-TAG_LEN:]
+    if to_decrypt:
+        f_out.write(cipher.decrypt(to_decrypt))
+    return tail
+
+
+def restore_streamed(base_dir, manifest, password, out_path, q=None, progress_callback=None):
+    parts = sorted(manifest.get("parts", []), key=lambda x: x["index"])
+    total_bytes = sum(part["size"] for part in parts)
+    processed_bytes = 0
+
+    header_len = len(MAGIC) + SALT_LEN + NONCE_LEN + 4
+    header_buf = b""
+    tail = b""
+    cipher = None
+
+    with open(out_path, "wb") as f_out:
+        for part in parts:
+            name = part["name"]
+            path = base_dir / name
+            if not path.exists():
+                raise FileNotFoundError(f"缺少分片：{name}")
+            if path.stat().st_size != part["size"]:
+                raise ValueError(f"分片大小不一致：{name}")
+            hasher = hashlib.sha256()
+            with open(path, "rb") as f_in:
+                while True:
+                    chunk = f_in.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    processed_bytes += len(chunk)
+
+                    if cipher is None:
+                        header_buf += chunk
+                        if len(header_buf) < header_len:
+                            if progress_callback is not None:
+                                progress_callback(
+                                    processed_bytes,
+                                    total_bytes,
+                                    f"正在处理 {name}（{format_size(processed_bytes)} / {format_size(total_bytes)}）",
+                                )
+                            continue
+                        header = header_buf[:header_len]
+                        extra = header_buf[header_len:]
+                        magic = header[: len(MAGIC)]
+                        if magic != MAGIC:
+                            raise ValueError("清单与文件不匹配")
+                        offset = len(MAGIC)
+                        salt = header[offset : offset + SALT_LEN]
+                        offset += SALT_LEN
+                        nonce = header[offset : offset + NONCE_LEN]
+                        offset += NONCE_LEN
+                        iterations = struct.unpack(">I", header[offset : offset + 4])[0]
+                        key = _pbkdf2_key(password, salt, iterations)
+                        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+                        tail = _process_encrypted_bytes(extra, cipher, tail, f_out)
+                        header_buf = b""
+                    else:
+                        tail = _process_encrypted_bytes(chunk, cipher, tail, f_out)
+
+                    if progress_callback is not None:
+                        progress_callback(
+                            processed_bytes,
+                            total_bytes,
+                            f"正在处理 {name}（{format_size(processed_bytes)} / {format_size(total_bytes)}）",
+                        )
+            if hasher.hexdigest().lower() != part["sha256"].lower():
+                raise ValueError(f"分片校验失败：{name}")
+            emit_log(q, f"校验通过：{name}")
+
+    if cipher is None or len(tail) != TAG_LEN:
+        raise ValueError("加密文件损坏")
+    try:
+        cipher.verify(tail)
+    except ValueError as e:
+        raise ValueError("密码错误或文件已损坏") from e
+
+
 def run_restore(state, q):
     manifest_path = Path(state["manifest"])
     if not manifest_path.exists():
@@ -174,10 +260,8 @@ def run_restore(state, q):
         manifest = json.load(f)
 
     phases = [
-        ("校验分片", 0.35),
-        ("合并分片", 0.30),
-        ("解密文件", 0.30),
-        ("等待保存", 0.05),
+        ("校验并解密", 0.92),
+        ("等待保存", 0.08),
     ]
     phase_offsets = {}
     current_offset = 0.0
@@ -185,67 +269,30 @@ def run_restore(state, q):
         phase_offsets[phase_name] = (current_offset, weight)
         current_offset += weight
 
-    emit_log(q, "开始校验分片")
-    verify_total = sum(part["size"] for part in manifest.get("parts", []))
-    verify_start, verify_span = phase_offsets["校验分片"]
-    emit_progress(q, "校验分片", 0, verify_total, "正在检查所有分片", verify_start)
-    verify_parts(
-        base_dir,
-        manifest,
-        q=q,
-        progress_callback=lambda current, total, detail: emit_progress(
-            q,
-            "校验分片",
-            current,
-            total,
-            detail,
-            overall_percent(current, total, verify_start, verify_span),
-        ),
-    )
-    emit_progress(q, "校验分片", verify_total, verify_total, "分片校验完成", verify_start + verify_span)
+    emit_log(q, "开始校验并解密")
+    total_bytes = sum(part["size"] for part in manifest.get("parts", []))
+    verify_start, verify_span = phase_offsets["校验并解密"]
+    emit_progress(q, "校验并解密", 0, total_bytes, "正在处理分片", verify_start)
 
     temp_dir = tempfile.mkdtemp()
-    enc_path = Path(temp_dir) / "encrypted.dat"
     zip_path = Path(temp_dir) / "output.zip"
     try:
-        emit_log(q, "开始合并分片")
-        merge_total = sum(part["size"] for part in manifest.get("parts", []))
-        merge_start, merge_span = phase_offsets["合并分片"]
-        emit_progress(q, "合并分片", 0, merge_total, "正在写入合并文件", merge_start)
-        rebuild_encrypted(
+        restore_streamed(
             base_dir,
             manifest,
-            enc_path,
+            state["password"],
+            zip_path,
             q=q,
             progress_callback=lambda current, total, detail: emit_progress(
                 q,
-                "合并分片",
+                "校验并解密",
                 current,
                 total,
                 detail,
-                overall_percent(current, total, merge_start, merge_span),
+                overall_percent(current, total, verify_start, verify_span),
             ),
         )
-        emit_progress(q, "合并分片", merge_total, merge_total, "分片合并完成", merge_start + merge_span)
-
-        emit_log(q, "开始解密")
-        decrypt_total = enc_path.stat().st_size
-        decrypt_start, decrypt_span = phase_offsets["解密文件"]
-        emit_progress(q, "解密文件", 0, decrypt_total, "正在恢复原始内容", decrypt_start)
-        decrypt_file(
-            enc_path,
-            zip_path,
-            state["password"],
-            q=q,
-            progress_callback=lambda current, total: emit_progress(
-                q,
-                "解密文件",
-                current,
-                total,
-                f"{format_size(current)} / {format_size(total)}",
-                overall_percent(current, total, decrypt_start, decrypt_span),
-            ),
-        )
+        emit_progress(q, "校验并解密", total_bytes, total_bytes, "校验与解密完成", verify_start + verify_span)
         wait_start, wait_span = phase_offsets["等待保存"]
         emit_progress(q, "等待保存", 1, 1, "请选择文件保存位置", wait_start + wait_span)
         q.put(("select_save", str(zip_path), manifest))

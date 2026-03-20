@@ -3,13 +3,37 @@ from time import monotonic
 from tkinter import ttk
 
 
+_LOG_MIN_INTERVAL = 0.2
+_PROGRESS_MIN_INTERVAL = 0.2
+
+
+def _should_emit(q, key, interval):
+    if q is None:
+        return False
+    now = monotonic()
+    cache = getattr(q, "_emit_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(q, "_emit_cache", cache)
+    last = cache.get(key, 0.0)
+    if now - last >= interval:
+        cache[key] = now
+        return True
+    return False
+
+
 def emit_log(q, msg):
-    if q is not None:
+    if q is None:
+        return
+    if _should_emit(q, "log", _LOG_MIN_INTERVAL):
         q.put(("log", msg))
 
 
 def emit_progress(q, phase, current, total, detail="", overall=None):
-    if q is not None:
+    if q is None:
+        return
+    force = current == 0 or (0 < total <= current)
+    if force or _should_emit(q, "progress", _PROGRESS_MIN_INTERVAL):
         q.put(
             (
                 "progress",

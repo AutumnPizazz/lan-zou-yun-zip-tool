@@ -9,8 +9,9 @@ import time
 import zipfile
 import hashlib
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, BinaryIO, Callable, Optional, Protocol, cast
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -31,7 +32,7 @@ from lan_zou_yun.gui_common import (
 
 ALLOWED_EXTS = [".txt"]
 PART_SIZE_MB_DEFAULT = 49
-CHUNK_SIZE = 4 * 1024 * 1024
+CHUNK_SIZE = 8 * 1024 * 1024
 MAGIC = b"LZYA1"
 SALT_LEN = 16
 NONCE_LEN = 12
@@ -79,6 +80,122 @@ def encrypt_file(src_path, out_path, password, q=None, progress_callback=None):
         "cipher": "AES-256-GCM",
         "tag_len": TAG_LEN,
     }
+
+
+class HashLike(Protocol):
+    def update(self, data: bytes) -> None:
+        ...
+
+    def hexdigest(self) -> str:
+        ...
+
+
+@dataclass
+class PartWriteState:
+    file: Optional[BinaryIO] = None
+    hash: Optional[HashLike] = None
+    size: int = 0
+    index: int = 0
+    name: str = ""
+    path: Optional[Path] = None
+
+
+def _write_part_bytes(
+    data,
+    out_dir,
+    part_size_bytes,
+    parts,
+    state: PartWriteState,
+):
+    offset = 0
+    while offset < len(data):
+        if state.file is None or state.size >= part_size_bytes:
+            if state.file is not None:
+                state.file.close()
+                parts.append(
+                    {
+                        "index": state.index,
+                        "name": state.name,
+                        "size": state.size,
+                        "sha256": state.hash.hexdigest() if state.hash is not None else "",
+                    }
+                )
+                state.index += 1
+            ext = secrets.choice(ALLOWED_EXTS)
+            name = f"{secrets.token_hex(3)}{ext}"
+            state.name = name
+            state.path = out_dir / name
+            state.file = open(state.path, "wb")
+            state.hash = hashlib.sha256()
+            state.size = 0
+
+        remaining = part_size_bytes - state.size
+        chunk = data[offset : offset + remaining]
+        state.file.write(chunk)
+        if state.hash is not None:
+            state.hash.update(chunk)
+        state.size += len(chunk)
+        offset += len(chunk)
+
+
+def stream_encrypt_and_split(src_path, out_dir, part_size_bytes, password, q=None, progress_callback=None):
+    salt = secrets.token_bytes(SALT_LEN)
+    nonce = secrets.token_bytes(NONCE_LEN)
+    key = _pbkdf2_key(password, salt, KDF_ITERATIONS)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+
+    header = MAGIC + salt + nonce + struct.pack(">I", KDF_ITERATIONS)
+    total_plain = os.path.getsize(src_path)
+    total_encrypted = len(header) + total_plain + TAG_LEN
+    processed = 0
+
+    parts = []
+    state = PartWriteState()
+
+    _write_part_bytes(header, out_dir, part_size_bytes, parts, state)
+    processed += len(header)
+    if progress_callback is not None:
+        progress_callback(processed, total_encrypted)
+
+    with open(src_path, "rb") as f_in:
+        while True:
+            chunk = f_in.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            enc = cipher.encrypt(chunk)
+            _write_part_bytes(enc, out_dir, part_size_bytes, parts, state)
+            processed += len(enc)
+            emit_log(q, f"加密中 {processed}/{total_encrypted} 字节")
+            if progress_callback is not None:
+                progress_callback(processed, total_encrypted)
+
+    tag = cipher.digest()
+    _write_part_bytes(tag, out_dir, part_size_bytes, parts, state)
+    processed += len(tag)
+    if progress_callback is not None:
+        progress_callback(processed, total_encrypted)
+
+    if state.file is not None and state.size > 0:
+        state.file.close()
+        parts.append(
+            {
+                "index": state.index,
+                "name": state.name,
+                "size": state.size,
+                "sha256": state.hash.hexdigest() if state.hash is not None else "",
+            }
+        )
+
+    kdf_info = {
+        "magic": MAGIC.decode("ascii"),
+        "salt": salt.hex(),
+        "nonce": nonce.hex(),
+        "iterations": KDF_ITERATIONS,
+        "kdf": "PBKDF2-HMAC-SHA256",
+        "cipher": "AES-256-GCM",
+        "tag_len": TAG_LEN,
+    }
+    return parts, kdf_info, total_encrypted
 
 
 def split_file(enc_path, out_dir, part_size_bytes, q=None, progress_callback=None):
@@ -150,18 +267,16 @@ def run_split(state, q):
     out_dir = out_base / f"{src.stem}_lanzou_out_{timestamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    temp_dir = tempfile.mkdtemp()
+    temp_dir = None
     original_size = src.stat().st_size if src.is_file() else 0
     phases = [
-        ("压缩文件夹", 0.25),
-        ("加密文件", 0.40),
-        ("生成分片", 0.30),
+        ("压缩文件夹", 0.30),
+        ("加密并生成分片", 0.65),
         ("收尾处理", 0.05),
     ]
     if not src.is_dir():
         phases = [
-            ("加密文件", 0.60),
-            ("生成分片", 0.35),
+            ("加密并生成分片", 0.95),
             ("收尾处理", 0.05),
         ]
     phase_offsets = {}
@@ -174,6 +289,7 @@ def run_split(state, q):
         if src.is_dir():
             original_size = sum(p.stat().st_size for p in src.rglob("*") if p.is_file())
             emit_log(q, "检测到文件夹，开始打包 ZIP")
+            temp_dir = tempfile.mkdtemp()
             temp_zip_path = Path(temp_dir) / f"{src.name}.zip"
             compressed = 0
             compress_start, compress_span = phase_offsets["压缩文件夹"]
@@ -197,43 +313,31 @@ def run_split(state, q):
         else:
             src_to_encrypt = src
 
-        emit_log(q, "开始加密")
-        enc_path = Path(temp_dir) / "encrypted.dat"
-        encrypt_total = os.path.getsize(src_to_encrypt)
-        encrypt_start, encrypt_span = phase_offsets["加密文件"]
-        emit_progress(q, "加密文件", 0, encrypt_total, "正在写入加密数据", encrypt_start)
-        kdf_info = encrypt_file(
+        emit_log(q, "开始加密并生成分片")
+        encrypt_start, encrypt_span = phase_offsets["加密并生成分片"]
+        emit_progress(q, "加密并生成分片", 0, 1, "正在准备输出分片", encrypt_start)
+        parts, kdf_info, encrypted_size = stream_encrypt_and_split(
             src_to_encrypt,
-            enc_path,
+            out_dir,
+            part_size,
             password,
             q=q,
             progress_callback=lambda current, total: emit_progress(
                 q,
-                "加密文件",
+                "加密并生成分片",
                 current,
                 total,
                 f"{format_size(current)} / {format_size(total)}",
                 overall_percent(current, total, encrypt_start, encrypt_span),
             ),
         )
-
-        emit_log(q, "开始分片")
-        split_total = enc_path.stat().st_size
-        split_start, split_span = phase_offsets["生成分片"]
-        emit_progress(q, "生成分片", 0, split_total, "正在写入分片文件", split_start)
-        parts = split_file(
-            enc_path,
-            out_dir,
-            part_size,
-            q=q,
-            progress_callback=lambda current, total: emit_progress(
-                q,
-                "生成分片",
-                current,
-                total,
-                f"{format_size(current)} / {format_size(total)}",
-                overall_percent(current, total, split_start, split_span),
-            ),
+        emit_progress(
+            q,
+            "加密并生成分片",
+            encrypted_size,
+            encrypted_size,
+            f"{format_size(encrypted_size)} / {format_size(encrypted_size)}",
+            encrypt_start + encrypt_span,
         )
 
         manifest = {
@@ -248,7 +352,7 @@ def run_split(state, q):
             },
             "encryption": kdf_info,
             "password_required": bool(password),
-            "encrypted_size": enc_path.stat().st_size,
+            "encrypted_size": encrypted_size,
             "part_size": part_size,
             "allowed_exts": ALLOWED_EXTS,
             "parts": parts,
@@ -261,7 +365,8 @@ def run_split(state, q):
         emit_progress(q, "收尾处理", 1, 1, f"正在生成清单并复制 {APP_EXE_NAME}", finalize_start + finalize_span)
         emit_log(q, f"完成，输出目录：{out_dir}")
     finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class SplitPage(ttk.Frame, ProgressPanelMixin):
