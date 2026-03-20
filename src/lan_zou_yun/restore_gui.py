@@ -292,13 +292,51 @@ def run_restore(state, q):
                 overall_percent(current, total, verify_start, verify_span),
             ),
         )
-        emit_progress(q, "校验并解密", total_bytes, total_bytes, "校验与解密完成", verify_start + verify_span)
-        wait_start, wait_span = phase_offsets["等待保存"]
-        emit_progress(q, "等待保存", 1, 1, "请选择文件保存位置", wait_start + wait_span)
-        q.put(("select_save", str(zip_path), manifest))
+    except ValueError as e:
+        message = str(e)
+        if message not in ("密码错误或文件已损坏", "加密文件损坏"):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+        emit_log(q, "流式还原失败，尝试兼容模式")
+        enc_path = Path(temp_dir) / "encrypted.dat"
+        emit_progress(q, "校验并解密", 0, total_bytes, "兼容模式：正在合并分片", verify_start)
+        rebuild_encrypted(
+            base_dir,
+            manifest,
+            enc_path,
+            q=q,
+            progress_callback=lambda current, total, detail: emit_progress(
+                q,
+                "校验并解密",
+                current,
+                total,
+                detail,
+                overall_percent(current, total, verify_start, verify_span),
+            ),
+        )
+        emit_progress(q, "校验并解密", total_bytes, total_bytes, "兼容模式：开始解密", verify_start + verify_span)
+        decrypt_file(
+            enc_path,
+            zip_path,
+            state["password"],
+            q=q,
+            progress_callback=lambda current, total: emit_progress(
+                q,
+                "校验并解密",
+                current,
+                total,
+                f"{format_size(current)} / {format_size(total)}",
+                overall_percent(current, total, verify_start, verify_span),
+            ),
+        )
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
+
+    emit_progress(q, "校验并解密", total_bytes, total_bytes, "校验与解密完成", verify_start + verify_span)
+    wait_start, wait_span = phase_offsets["等待保存"]
+    emit_progress(q, "等待保存", 1, 1, "请选择文件保存位置", wait_start + wait_span)
+    q.put(("select_save", str(zip_path), manifest))
 
 
 class RestorePage(ttk.Frame, ProgressPanelMixin):
